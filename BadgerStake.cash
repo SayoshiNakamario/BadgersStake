@@ -136,6 +136,7 @@ contract BadgerStake() {
 
     //inputs:
     //  0   lockUTXO            [NFT]   (from contract)
+
     //outputs:
     //  0   BadgerCoins         [FUN]   (to user)
     //  1   Honey               [NFT]   (to user)
@@ -191,6 +192,7 @@ contract BadgerStake() {
         // OP_0 OP_OUTPUTVALUE e803 OP_NUMEQUALVERIFY
         require(tx.outputs[0].value == 1000);
 
+        // output0 (BadgerCoins) equals the token amount input
         // OP_0 OP_OUTPUTTOKENAMOUNT OP_0 OP_UTXOTOKENAMOUNT OP_NUMEQUALVERIFY
         require(tx.outputs[0].tokenAmount == tx.inputs[0].tokenAmount);
 
@@ -232,6 +234,7 @@ contract BadgerStake() {
     //inputs:
     //  0   masterBadger        [NFT]   (from contract)
     //  1   adminUTXO           [BCH]   (from admin)
+
     //outputs:
     //  0   masterBadger        [NFT]   (to contract)
     //  1   withdrawUTXO        [BCH]   (to admin)
