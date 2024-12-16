@@ -1,0 +1,313 @@
+pragma cashscript ^0.10.0;
+
+contract BadgerStake() {
+
+    /////////////////////////////////////////////
+
+    //inputs:
+    //  0   masterBadger        [NFT]   (from contract)
+    //  1   userUTXO            [BCH]   (from user)
+
+    //outputs:
+    //  0   masterBadger        [NFT]   (to contract)
+    //  1   lockUTXO            [NFT]   (to contract)
+    //  2   {optional} change   [BCH]   (to user)
+
+    /////////////////////
+
+    //parameters:
+    //  amount: BCH amount user wants to lock up
+    //  stakeBlocks: number of blocks to be locked up for
+    //  pubkeyhash: a pubkeyhash, used to send the locked BCH back to the users address
+
+    /////////////////////////////////////////////
+
+    // OP_DUP OP_0 OP_NUMEQUAL
+    // OP_IF
+    function lock(int amount, int stakeBlocks, bytes20 pubkeyhash) {
+
+        // this contract must be input0
+        // OP_INPUTINDEX OP_0 OP_NUMEQUALVERIFY
+        require(this.activeInputIndex == 0);
+
+        // must have exactly 2 inputs
+        // OP_TXINPUTCOUNT OP_2 OP_NUMEQUALVERIFY
+        require(tx.inputs.length == 2);
+
+        // must have 3 or less outputs
+        // OP_TXOUTPUTCOUNT OP_3 OP_LESSTHANOREQUAL OP_VERIFY
+        require(tx.outputs.length <= 3);
+
+        // cannot lock for longer than 65536 blocks
+        // OP_2 OP_PICK 000001 OP_LESSTHANOREQUAL OP_VERIFY
+        require(stakeBlocks <= 65536);
+
+        // minimum 5000 sats to lock so have enough for unlock()
+        // OP_OVER 8813 OP_GREATERTHANOREQUAL OP_VERIFY
+        require(amount >= 5000);
+
+
+        // input0 must be masterBadger NFT
+        // OP_0 OP_UTXOTOKENCATEGORY d7ff0a63d5c1cbe1ced509314fe3caca563a73095be37734744c40dbce6e2f24 OP_2 OP_CAT OP_EQUALVERIFY
+        require(tx.inputs[0].tokenCategory == 0xd7ff0a63d5c1cbe1ced509314fe3caca563a73095be37734744c40dbce6e2f24 + 0x02);
+
+        // input1 must be BCH with no tokens
+        // OP_1 OP_UTXOTOKENCATEGORY OP_0 OP_EQUALVERIFY
+        require(tx.inputs[1].tokenCategory == 0x);
+
+
+        // provided pubkeyhash must be the pubkeyhash of input1 (users address)
+        // OP_1 OP_UTXOBYTECODE 76a914 OP_5 OP_PICK OP_CAT 88ac OP_CAT OP_EQUALVERIFY
+        require(tx.inputs[1].lockingBytecode == new LockingBytecodeP2PKH(pubkeyhash));
+
+        // convert stakeBlocks to bytes for inclusion into commitment
+        // OP_2 OP_PICK OP_2 OP_NUM2BIN
+        bytes stakeLength = bytes2(stakeBlocks);
+
+        // save payout address and length of lock into output1 commitment (lockNFT)
+        // OP_1 OP_OUTPUTTOKENCOMMITMENT OP_5 OP_ROLL OP_0 12 OP_NUM2BIN OP_CAT OP_ROT OP_CAT OP_EQUALVERIFY
+        require(tx.outputs[1].nftCommitment == pubkeyhash + bytes18(0) + stakeLength);
+
+
+        // get current locking fee from masterBadger's commitment
+        // OP_0 OP_UTXOTOKENCOMMITMENT OP_2 OP_SPLIT OP_DROP
+        bytes2 stakeFee = bytes2(tx.inputs[0].nftCommitment.split(2)[0]);
+
+        // add locking fee to current masterBadger balance
+        // OP_0 OP_OUTPUTVALUE OP_0 OP_UTXOVALUE OP_ROT OP_BIN2NUM OP_ADD OP_NUMEQUALVERIFY
+        require(tx.outputs[0].value == tx.inputs[0].value + int(stakeFee));
+
+        // output0 sent to contract (recreate masterBadger)
+        // OP_0 OP_OUTPUTBYTECODE OP_0 OP_UTXOBYTECODE OP_EQUALVERIFY
+        require(tx.outputs[0].lockingBytecode == tx.inputs[0].lockingBytecode);
+
+        // carry forward masterBadger tokenCategory + capability
+        // OP_0 OP_OUTPUTTOKENCATEGORY OP_0 OP_UTXOTOKENCATEGORY OP_EQUALVERIFY
+        require(tx.outputs[0].tokenCategory == tx.inputs[0].tokenCategory);
+
+        // carry forward masterBadger commitment
+        // OP_0 OP_OUTPUTTOKENCOMMITMENT OP_0 OP_UTXOTOKENCOMMITMENT OP_EQUALVERIFY
+        require(tx.outputs[0].nftCommitment == tx.inputs[0].nftCommitment);
+
+        // calculate amount of BadgerCoins user will earn (amount * blocks / 1BCH)
+        // OP_OVER OP_3 OP_ROLL OP_MUL 00e1f505 OP_DIV OP_DUP
+        int stakeReward = amount * stakeBlocks / 100000000;
+
+        // require at least 1 BadgerCoin will be earned
+        // OP_1 OP_GREATERTHANOREQUAL OP_VERIFY
+        require(stakeReward >= 1);
+
+        // deduct earned BadgerCoins from masterBadger
+        // OP_0 OP_OUTPUTTOKENAMOUNT OP_0 OP_UTXOTOKENAMOUNT OP_2 OP_PICK OP_SUB OP_NUMEQUALVERIFY
+        require(tx.outputs[0].tokenAmount == tx.inputs[0].tokenAmount - stakeReward);
+
+        // output1 sent to contract (lockNFT)
+        // OP_1 OP_OUTPUTBYTECODE OP_0 OP_UTXOBYTECODE OP_EQUALVERIFY
+        require(tx.outputs[1].lockingBytecode == tx.inputs[0].lockingBytecode);
+
+        // lockNFT is a mutable NFT of masterBadger categoryID
+        // OP_1 OP_OUTPUTTOKENCATEGORY OP_0 OP_UTXOTOKENCATEGORY 20 OP_SPLIT OP_DROP OP_1 OP_CAT OP_EQUALVERIFY
+        require(tx.outputs[1].tokenCategory == tx.inputs[0].tokenCategory.split(32)[0] + 0x01);
+
+        // lockNFT has BCH equal to users amount parameter
+        // OP_1 OP_OUTPUTVALUE OP_3 OP_ROLL OP_NUMEQUALVERIFY
+        require(tx.outputs[1].value == amount);
+
+        // lockNFT has BadgerCoin equal to calculated amount to be earned
+        // OP_1 OP_OUTPUTTOKENAMOUNT OP_NUMEQUALVERIFY
+        require(tx.outputs[1].tokenAmount == stakeReward);
+
+        // if output2 exists (change)
+        // OP_TXOUTPUTCOUNT OP_3 OP_NUMEQUAL OP_IF
+        if (tx.outputs.length == 3) {
+
+            // change must be sent to users address
+            // OP_2 OP_OUTPUTBYTECODE OP_1 OP_UTXOBYTECODE OP_EQUALVERIFY
+            require(tx.outputs[2].lockingBytecode == tx.inputs[1].lockingBytecode);
+
+            // change must not have tokens
+            // OP_2 OP_OUTPUTTOKENCATEGORY OP_0 OP_EQUALVERIFY
+            require(tx.outputs[2].tokenCategory == 0x);
+
+        } // OP_ENDIF
+    } // OP_DROP OP_1 OP_ELSE
+
+    /////////////////////////////////////////////
+
+    //inputs:
+    //  0   lockUTXO            [NFT]   (from contract)
+    //outputs:
+    //  0   BadgerCoins         [FUN]   (to user)
+    //  1   Honey               [NFT]   (to user)
+    //  2   {optional} change   [BCH]   (to user)
+
+    /////////////////////////////////////////////
+
+    // OP_DUP OP_1 OP_NUMEQUAL
+    // OP_IF
+    function unlock() {
+
+        // this contract must be input0
+        // OP_INPUTINDEX OP_0 OP_NUMEQUALVERIFY
+        require(this.activeInputIndex == 0);
+
+        // must have exactly 1 input
+        // OP_TXINPUTCOUNT OP_1 OP_NUMEQUALVERIFY
+        require(tx.inputs.length == 1);
+
+        // must have exactly 3 outputs
+        // OP_TXOUTPUTCOUNT OP_3 OP_NUMEQUALVERIFY
+        require(tx.outputs.length == 3);
+
+        // input0 must be a lockNFT (masterBadger categoryID + mutable)
+        // OP_0 OP_UTXOTOKENCATEGORY d7ff0a63d5c1cbe1ced509314fe3caca563a73095be37734744c40dbce6e2f24 OP_1 OP_CAT OP_EQUALVERIFY
+        require(tx.inputs[0].tokenCategory == 0xd7ff0a63d5c1cbe1ced509314fe3caca563a73095be37734744c40dbce6e2f24 + 0x01);
+
+        // get number of blocks locked for from lockNFT's commitment
+        // OP_0 OP_UTXOTOKENCOMMITMENT 26 OP_SPLIT OP_NIP OP_BIN2NUM
+        bytes stakeBlocks = bytes2(tx.inputs[0].nftCommitment.split(38)[1]);
+
+        // require the number of blocks locked for has been passed
+        // OP_CHECKSEQUENCEVERIFY OP_DROP
+        require(tx.age >= int(stakeBlocks));
+
+        // get the pubkeyhash in lockNFT it was created with
+        // OP_0 OP_UTXOTOKENCOMMITMENT 14 OP_SPLIT OP_DROP
+        bytes20 payoutAddress = bytes20(tx.inputs[0].nftCommitment.split(20)[0]);
+
+        // create the lockingBytecode for that pubkeyhash
+        // 76a914 OP_SWAP OP_CAT 88ac OP_CAT
+        bytes payoutBytecode = new LockingBytecodeP2PKH(payoutAddress);
+
+        // output0 (BadgerCoins) goes to the resulting wallet address (user who created the lock)
+        // OP_0 OP_OUTPUTBYTECODE OP_OVER OP_EQUALVERIFY
+        require(tx.outputs[0].lockingBytecode == payoutBytecode);
+
+        // output0 is a masterBadger categoryID but no capability
+        // OP_0 OP_OUTPUTTOKENCATEGORY OP_0 OP_UTXOTOKENCATEGORY 20 OP_SPLIT OP_DROP OP_EQUALVERIFY
+        require(tx.outputs[0].tokenCategory == tx.inputs[0].tokenCategory.split(32)[0]);
+
+        // output0 has 1000 dust satoshis so it can exist
+        // OP_0 OP_OUTPUTVALUE e803 OP_NUMEQUALVERIFY
+        require(tx.outputs[0].value == 1000);
+
+        // OP_0 OP_OUTPUTTOKENAMOUNT OP_0 OP_UTXOTOKENAMOUNT OP_NUMEQUALVERIFY
+        require(tx.outputs[0].tokenAmount == tx.inputs[0].tokenAmount);
+
+        // output1 (HoneyNFT) goes to the resulting wallet address (user who created the lock)
+        // OP_1 OP_OUTPUTBYTECODE OP_OVER OP_EQUALVERIFY
+        require(tx.outputs[1].lockingBytecode == payoutBytecode);
+
+        // output1 is a masterBadger categoryID but no capability
+        // OP_1 OP_OUTPUTTOKENCATEGORY OP_0 OP_UTXOTOKENCATEGORY 20 OP_SPLIT OP_DROP OP_EQUALVERIFY
+        require(tx.outputs[1].tokenCategory == tx.inputs[0].tokenCategory.split(32)[0]);
+
+        // output1 has 1000 satoshis so it can exist
+        // OP_1 OP_OUTPUTVALUE e803 OP_NUMEQUALVERIFY
+        require(tx.outputs[1].value == 1000);
+
+        // create commitment of ID0 + amount of BadgerCoins earned
+        // 0000 OP_0 OP_UTXOTOKENAMOUNT OP_CAT
+        bytes commitment = 0x0000 + bytes(tx.inputs[0].tokenAmount);
+
+        // output1 has above commitment
+        // OP_1 OP_OUTPUTTOKENCOMMITMENT OP_EQUALVERIFY
+        require(tx.outputs[1].nftCommitment == commitment);
+
+        // output2 (unlocked BCH) goes to the extracted wallet address (user who created the lock)
+        // OP_2 OP_OUTPUTBYTECODE OP_EQUALVERIFY
+        require(tx.outputs[2].lockingBytecode == payoutBytecode);
+
+        // output2 has no tokens
+        // OP_2 OP_OUTPUTTOKENCATEGORY OP_0 OP_EQUALVERIFY
+        require(tx.outputs[2].tokenCategory == 0x);
+
+        // output2 has original locked BCH minus 3000 sats (miner fee + BadgerCoin utxo + Honey utxo)
+        // OP_2 OP_OUTPUTVALUE OP_0 OP_UTXOVALUE b80b OP_SUB OP_NUMEQUAL
+        require(tx.outputs[2].value == tx.inputs[0].value - 3000);
+    } // OP_NIP OP_ELSE
+
+    /////////////////////////////////////////////
+
+    //inputs:
+    //  0   masterBadger        [NFT]   (from contract)
+    //  1   adminUTXO           [BCH]   (from admin)
+    //outputs:
+    //  0   masterBadger        [NFT]   (to contract)
+    //  1   withdrawUTXO        [BCH]   (to admin)
+
+    /////////////////////
+
+    //parameters:
+    //  newFee: sets the masterBadger's locking fee (0 to 65536)
+
+    /////////////////////////////////////////////
+
+    // OP_2 OP_NUMEQUALVERIFY
+    function withdraw(int newFee) {
+
+        // this contract must be input0
+        // OP_INPUTINDEX OP_0 OP_NUMEQUALVERIFY
+        require(this.activeInputIndex == 0);
+
+        // must have exactly 2 inputs
+        // OP_TXINPUTCOUNT OP_2 OP_NUMEQUALVERIFY
+        require(tx.inputs.length == 2);
+
+        // must have exactly 2 outputs
+        // OP_TXOUTPUTCOUNT OP_2 OP_NUMEQUALVERIFY
+        require(tx.outputs.length == 2);
+
+        // input0 must be masterBadger NFT
+        // OP_0 OP_UTXOTOKENCATEGORY d7ff0a63d5c1cbe1ced509314fe3caca563a73095be37734744c40dbce6e2f24 OP_2 OP_CAT OP_EQUALVERIFY
+        require(tx.inputs[0].tokenCategory == 0xd7ff0a63d5c1cbe1ced509314fe3caca563a73095be37734744c40dbce6e2f24 + 0x02);
+
+        // input1 must be BCH with no tokens
+        // OP_1 OP_UTXOTOKENCATEGORY OP_0 OP_EQUALVERIFY
+        require(tx.inputs[1].tokenCategory == 0x);
+
+        // get admins pubkeyhash stored in masterBadger commitment
+        // OP_0 OP_UTXOTOKENCOMMITMENT 14 OP_SPLIT OP_NIP
+        bytes20 adminAddress = bytes20(tx.inputs[0].nftCommitment.split(20)[1]);
+
+        // create the lockingBytecode for that pubkeyhash
+        // 76a914 OP_SWAP OP_CAT 88ac OP_CAT
+        bytes payoutBytecode = new LockingBytecodeP2PKH(adminAddress);
+
+        // require the resulting lockingBytecode matches input1 (input1 is from admin address)
+        // OP_1 OP_UTXOBYTECODE OP_EQUALVERIFY
+        require(tx.inputs[1].lockingBytecode == payoutBytecode);
+
+        // output1 has no tokens
+        // OP_1 OP_OUTPUTTOKENCATEGORY OP_0 OP_EQUALVERIFY
+        require(tx.outputs[1].tokenCategory == 0x);
+
+        // output1 takes masterBadger's BCH balance minus 2000 sats (miner fee + masterBadger dust)
+        // OP_1 OP_OUTPUTVALUE OP_0 OP_UTXOVALUE OP_1 OP_UTXOVALUE OP_ADD d007 OP_SUB OP_NUMEQUALVERIFY
+        require(tx.outputs[1].value == tx.inputs[0].value + tx.inputs[1].value - 2000);
+
+        // output0 sent to contract (recreate masterBadger)
+        // OP_0 OP_OUTPUTBYTECODE OP_0 OP_UTXOBYTECODE OP_EQUALVERIFY
+        require(tx.outputs[0].lockingBytecode == tx.inputs[0].lockingBytecode);
+
+        // masterBadger retains its tokenCategory + capability
+        // OP_0 OP_OUTPUTTOKENCATEGORY OP_0 OP_UTXOTOKENCATEGORY OP_EQUALVERIFY
+        require(tx.outputs[0].tokenCategory == tx.inputs[0].tokenCategory);
+
+        // masterBadger set to 1000 sats so it can exist
+        // OP_0 OP_OUTPUTVALUE e803 OP_NUMEQUALVERIFY
+        require(tx.outputs[0].value == 1000);
+
+        // masterBadger retains its remaining BadgerCoins
+        // OP_0 OP_OUTPUTTOKENAMOUNT OP_0 OP_UTXOTOKENAMOUNT OP_NUMEQUALVERIFY
+        require(tx.outputs[0].tokenAmount == tx.inputs[0].tokenAmount);
+
+        // get last 38bytes of masterBadgers commitment
+        // OP_0 OP_UTXOTOKENCOMMITMENT OP_2 OP_SPLIT OP_NIP
+        bytes restCommitment = tx.inputs[0].nftCommitment.split(2)[1];
+
+        // update masterBadger's commitment to newFee + rest of its commitment
+        // OP_0 OP_OUTPUTTOKENCOMMITMENT OP_ROT OP_2 OP_NUM2BIN OP_ROT OP_CAT OP_EQUAL
+        require(tx.outputs[0].nftCommitment == bytes2(newFee) + restCommitment);
+    } // OP_ENDIF
+} // OP_ENDIF
