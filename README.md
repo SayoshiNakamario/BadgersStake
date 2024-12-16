@@ -2,7 +2,7 @@
 
 ## What is BadgersStake?
 
-A decentralized staking contract for BitcoinCash. It is a UTXO smart contracts written with [CashScript](https://cashscript.org/) that distributes fungible tokens as a reward for locking and unlocking coins.
+A decentralized staking contract for BitcoinCash. It is a UTXO smart contract written with [CashScript](https://cashscript.org/) that distributes fungible tokens as a reward for locking and unlocking coins.
 
 The CashScript for the [BadgersStake Contract is here](./BadgerStake.cash).
 
