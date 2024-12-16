@@ -247,7 +247,7 @@ contract BadgerStake() {
     /////////////////////////////////////////////
 
     // OP_2 OP_NUMEQUALVERIFY
-    function withdraw(int newFee) {
+    function setLockingFee(int newFee) {
 
         // this contract must be input0
         // OP_INPUTINDEX OP_0 OP_NUMEQUALVERIFY
